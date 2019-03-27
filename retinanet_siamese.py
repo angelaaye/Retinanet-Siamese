@@ -102,12 +102,64 @@ class RegressionModel(nn.Module):
         # [N, 9*4,H,W] -> [N,H,W, 9*4] -> [N,H*W*9, 4]
         return out.contiguous().view(out.shape[0], -1, 4)
 
+class ClassificationSiamese(nn.Module):
+    '''
+    Implements the Siamese Network defined in Koch's paper. For more detail, please visit
+    http://www.cs.utoronto.ca/~gkoch/files/msc-thesis.pdf
+    The network consists of 4 convolutional layers, each followed by relu and max pool.
+    Lastly, the L1 distance between two images are compared to output a sigmoid output.
+    '''
+    def __init__(self, num_features_in, num_anchors=9, num_classes=80):
+        super(ClassificationSiamese, self).__init__()
+        # self.conv1 = torch.nn.Conv2d(1, 64, kernel_size=10)
+        # self.conv2 = torch.nn.Conv2d(64, 128, kernel_size=7)
+        # self.conv3 = torch.nn.Conv2d(128, 128, kernel_size=4)
+        # self.conv4 = torch.nn.Conv2d(128, 256, kernel_size=4)
+        self.num_classes = num_classes
+        self.num_anchors = num_anchors
+        self.conv1 = nn.Conv2d(num_features_in, 256, kernel_size=3, padding=1)
+        self.conv2 = nn.Conv2d(256, 256, kernel_size=3, padding=1)
+        self.conv3 = nn.Conv2d(256, 256, kernel_size=3, padding=1)
+        self.conv4 = nn.Conv2d(256, 256, kernel_size=3, padding=1)
+        self.conv5 = nn.Conv2d(256, num_anchors*num_classes, kernel_size=3, padding=1)
+        self.pool = nn.MaxPool2d(kernel_size=2)
+        self.fc1 = nn.Linear(256 * 6 * 6, 4096)
+        self.fc2 = nn.Linear(4096, 1)
+        self.sigmoid = nn.Sigmoid()
+
+    def sub_forward(self, x):
+        # x = F.relu(self.conv1(x))
+        # x = self.pool(x)
+        # x = F.relu(self.conv2(x))
+        # x = self.pool(x)
+        # x = F.relu(self.conv3(x))
+        # x = self.pool(x)
+        # x = F.relu(self.conv4(x))
+        # x = x.view(-1, 256 * 6 * 6)
+        # x = self.sigmoid(self.fc1(x))
+        x = F.relu(self.conv1(x))
+        x = F.relu(self.conv2(x))
+        x = F.relu(self.conv3(x))
+        x = F.relu(self.conv4(x))
+        x = self.sigmoid(self.conv5(x))
+        return x
+
+    def forward(self, x, y):
+        x1 = self.sub_forward(x)
+        x2 = self.sub_forward(y)
+        # L1 distance followed by Sigmoid
+        # out = self.sigmoid(self.fc2(torch.abs(x1-x2)))   
+        out = self.sigmoid(torch.abs(x1-x2))
+        # return out
+        return out.contiguous().view(x.shape[0], -1, self.num_classes)
+
+
 class ClassificationModel(nn.Module):
     '''
     Network head consists of 3x3 convolution followed by two sibling 1x1 convolutions
     for classification and regressions to each level of the feature pyramid.
     '''
-    def __init__(self, num_features_in, num_anchors=9, num_classes=80, prior=0.01):
+    def __init__(self, num_features_in, num_anchors=9, num_classes=80):
         super(ClassificationModel, self).__init__()
 
         self.num_classes = num_classes
@@ -130,17 +182,16 @@ class ClassificationModel(nn.Module):
         out = self.sigmoid(self.conv5(out))
 
         # out is B x C x W x H, with C = n_classes + n_anchors
-        out1 = out.permute(0, 2, 3, 1)
+        out = out.permute(0, 2, 3, 1)
+        # batch_size, width, height, channels = out1.shape
 
-        batch_size, width, height, channels = out1.shape
-
-        out2 = out1.view(batch_size, width, height, self.num_anchors, self.num_classes)
+        # out2 = out1.view(batch_size, width, height, self.num_anchors, self.num_classes)
 
         # contiguous() makes a copy of the tensor
         # view() is equivalent to reshape; -1 fills the unknown dimension
         # [N,9*20,H,W] -> [N,H,W,9*20] -> [N,H*W*9,20]
-        return out2.contiguous().view(x.shape[0], -1, self.num_classes)
-        # return out.contiguous().view(x.shape[0], -1, self.num_classes)
+        # return out2.contiguous().view(x.shape[0], -1, self.num_classes)
+        return out.contiguous().view(x.shape[0], -1, self.num_classes) #(batch_size, num_anchors*width*height, num_classes)
 
 class ResNet(nn.Module):
 
@@ -156,6 +207,10 @@ class ResNet(nn.Module):
         self.layer2 = self._make_layer(block, planes=128, blocks=layers[1], stride=2)
         self.layer3 = self._make_layer(block, planes=256, blocks=layers[2], stride=2)
         self.layer4 = self._make_layer(block, planes=512, blocks=layers[3], stride=2)
+        self.layer5 = self._make_layer_pair(64, block, planes=64, blocks=layers[1], stride=1)
+        self.layer6 = self._make_layer_pair(64, block, planes=128, blocks=layers[2], stride=1)
+        self.layer7 = self._make_layer_pair(128, block, planes=256, blocks=layers[3], stride=2)
+        self.layer8 = self._make_layer_pair(256, block, planes=512, blocks=layers[3], stride=2)
 
         if block == BasicBlock:
             fpn_sizes = [self.layer2[layers[1]-1].conv2.out_channels, self.layer3[layers[2]-1].conv2.out_channels, self.layer4[layers[3]-1].conv2.out_channels]
@@ -163,9 +218,9 @@ class ResNet(nn.Module):
             fpn_sizes = [self.layer2[layers[1]-1].conv3.out_channels, self.layer3[layers[2]-1].conv3.out_channels, self.layer4[layers[3]-1].conv3.out_channels]
 
         self.fpn = PyramidFeatures(fpn_sizes[0], fpn_sizes[1], fpn_sizes[2])
-
         self.regressionModel = RegressionModel(256)
         self.classificationModel = ClassificationModel(256, num_classes=num_classes)
+        self.classificationSiamese = ClassificationSiamese(256, num_classes=num_classes)
 
         self.anchors = Anchors()
 
@@ -187,6 +242,7 @@ class ResNet(nn.Module):
         
         self.classificationModel.conv5.weight.data.fill_(0)
         self.classificationModel.conv5.bias.data.fill_(-math.log((1.0-prior)/prior))
+        self.classificationSiamese.conv5.bias.data.fill_(-math.log((1.0-prior)/prior))
 
         self.regressionModel.conv5.weight.data.fill_(0)
         self.regressionModel.conv5.bias.data.fill_(0)
@@ -211,6 +267,23 @@ class ResNet(nn.Module):
 
         return nn.Sequential(*layers)
 
+    def _make_layer_pair(self, inplanes, block, planes, blocks, stride=1):
+        downsample = None
+        downsample = nn.Sequential(
+            nn.Conv2d(inplanes, planes * block.expansion,
+                        kernel_size=1, stride=stride, bias=False),
+            nn.BatchNorm2d(planes * block.expansion),
+        )
+        layers = []
+        layers.append(block(inplanes, planes, stride, downsample))
+        if stride != 1:
+            inplanes = inplanes * 2
+        inplanes = planes * block.expansion
+        for i in range(1, blocks):
+            layers.append(block(inplanes, planes))  # stride = 1, downsample = None
+
+        return nn.Sequential(*layers)
+
     def freeze_bn(self):
         '''Freeze BatchNorm layers.'''
         for layer in self.modules():
@@ -220,26 +293,41 @@ class ResNet(nn.Module):
     def forward(self, inputs):
 
         if self.training:
-            img_batch, annotations = inputs
+            img_batch, annotations, pairs = inputs
         else:
-            img_batch = inputs
+            img_batch, pairs = inputs
             
-        c1 = F.relu(self.bn1(self.conv1(img_batch)))
-        c1 = F.max_pool2d(c1, kernel_size=3, stride=2, padding=1)
-
-        c2 = self.layer1(c1)
-        c3 = self.layer2(c2)
-        c4 = self.layer3(c3)
-        c5 = self.layer4(c4)
-
+        c1 = F.relu(self.bn1(self.conv1(img_batch)))  # 2, 64, 320, 320
+        c1 = F.max_pool2d(c1, kernel_size=3, stride=2, padding=1) #2, 64, 160, 160
+        c2 = self.layer1(c1) # c2 torch.Size([2, 64, 160, 160])
+        c3 = self.layer2(c2) # c3 torch.Size([2, 128, 80, 80])
+        c4 = self.layer3(c3) # c4 torch.Size([2, 256, 40, 40]) 
+        c5 = self.layer4(c4) # c5 torch.Size([2, 512, 20, 20])
         features = self.fpn([c3, c4, c5])
 
+        c1 = F.relu(self.bn1(self.conv1(pairs)))  # 2, 64, 80, 80
+        c1 = F.max_pool2d(c1, kernel_size=3, stride=1, padding=1) # 2, 64, 80, 80
+        c2 = self.layer5(c1) # 2, 64, 80, 80
+        c3 = self.layer6(c2) # 2, 128, 80, 80
+        c4 = self.layer7(c3) # 2, 256, 40, 40
+        c5 = self.layer8(c4) # 2, 512, 20, 20
+        features_pairs = self.fpn([c3, c4, c5])
+    
         regression = torch.cat([self.regressionModel(feature) for feature in features], dim=1)
-
-        classification = torch.cat([self.classificationModel(feature) for feature in features], dim=1)
+        
+        classification = None
+        for ind, feature in enumerate(features):
+            for ind2, feature_pair in enumerate(features_pairs):
+                if ind == ind2:
+                    if classification is not None:
+                        classification = torch.cat((classification, self.classificationSiamese(feature, feature_pair)), dim=1)
+                        break
+                    else:
+                        classification = self.classificationSiamese(feature, feature_pair)
+                        break
+        # classification = torch.cat([self.classificationModel(feature) for feature in features], dim=1)
 
         anchors = self.anchors(img_batch)
-
         if self.training:
             return self.focalLoss(classification, regression, anchors, annotations)
         else:

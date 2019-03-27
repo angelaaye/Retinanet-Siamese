@@ -11,6 +11,7 @@ import numpy as np
 from PIL import Image
 from random import Random
 from numpy import genfromtxt
+import matplotlib.pyplot as plt
 
 import torch
 import torchvision
@@ -23,6 +24,7 @@ import torch.nn.functional as F
 from torch.optim.lr_scheduler import StepLR
 
 import model
+import csv_eval
 from siamese_network import SiameseNetwork
 from dataloader import CSVDataset, collater, Resizer, AspectRatioBasedSampler, Augmenter
 
@@ -43,7 +45,7 @@ def add_argument_group(name):
 data_arg = add_argument_group('Data Params')
 data_arg.add_argument('--test_trials', type=int, default=10000,
                       help='# of test 1-shot trials')
-data_arg.add_argument('--way', type=int, default=20,
+data_arg.add_argument('--way', type=int, default=1,
                       help='Ways in the 1-shot trials')
 data_arg.add_argument('--num_workers', type=int, default=1,
                       help='# of subprocesses to use for data loading. If using CUDA, num_workers should be set to `1`')
@@ -93,9 +95,10 @@ def main(config):
     my_data = genfromtxt(test_file, delimiter=',', dtype=None, encoding="utf8")
 
     data_loader = get_test_loader(
-        config.data_dir, 2,
+        config.data_dir, config.way,
         10000, 0, my_data
     )
+    img_labels = [i[-1] for i in my_data]
     try:
         layer_hyperparams = load_config(config)
     except FileNotFoundError:
@@ -130,14 +133,19 @@ def main(config):
     retinanet.load_state_dict(torch.load(config.model))
 
     retinanet.eval()
-
+    
     transform = transforms.ToTensor()
+
+    correct = 0
+
+    mAP = csv_eval.evaluate(dataset_val, retinanet)
+
     for idx, data in enumerate(dataloader_val):
 
         with torch.no_grad():
-            st = time.time()
+            # st = time.time()
             scores, classification, transformed_anchors = retinanet(data['img'].cuda().float())
-            print('Elapsed time: {}'.format(time.time()-st))
+            # print('Elapsed time: {}'.format(time.time()-st))
             scores = scores.cpu().numpy()
             idxs = np.where(scores>0.5)
             img = np.array(255 * data['img'][0, :, :, :]).copy()
@@ -148,7 +156,11 @@ def main(config):
             img = np.transpose(img, (1, 2, 0))
             PIL_img = Image.fromarray(np.uint8(img))
 
-            img = cv2.cvtColor(img.astype(np.uint8), cv2.COLOR_BGR2RGB)
+            # img = cv2.cvtColor(img.astype(np.uint8), cv2.COLOR_BGR2RGB)
+            max_sim = 0
+            if idx % config.way == 0:
+                index = img_labels[idx*5:idx*5+5*config.way].index(data_loader[idx//config.way][1])
+                bbox_true = np.asarray([list(my_data[idx*5+index])[1:5]])
 
             for j in range(idxs[0].shape[0]):
                 bbox = transformed_anchors[idxs[0][j], :]
@@ -161,16 +173,44 @@ def main(config):
                 cropped_img = cropped_img.convert('L')
                 cropped_img = transform(cropped_img)
                 cropped_img = cropped_img.unsqueeze(0)
-                similarity = trainer.test(cropped_img, data_loader[idx])
+                similarity = trainer.test(cropped_img, data_loader[idx//config.way][0])
+                if similarity.item() > max_sim:
+                    max_sim = similarity.item()
+                    bbox_est = np.asarray([[x1, y1, x2, y2]])
                 # label_name = dataset_val.labels[int(classification[idxs[0][j]])]
-                draw_caption(img, (x1, y1, x2, y2), str(round(similarity.item(),2)))
 
-                cv2.rectangle(img, (x1, y1), (x2, y2), color=(0, 0, 255), thickness=2)
-                # print(label_name)
+                # draw_caption(img, (x1, y1, x2, y2), str(round(similarity.item(),2)))
+                # cv2.rectangle(img, (x1, y1), (x2, y2), color=(0, 0, 255), thickness=2)
+            # input_img = data_loader[idx//config.way][0].squeeze()
+            # input_img = np.array(input_img.unsqueeze(2))
+            # cv2.imshow('input', input_img)
+            if (idx+1) % config.way == 0:
+                iou = compute_overlap(bbox_true, bbox_est/data['scale'][0])
+                if iou > 0.5:
+                    correct += 1
+                max_sim = 0
+            print('Iter = {}, number correct = {}'.format(idx+1, correct))    
+            # cv2.imshow('img', img)
+            # cv2.waitKey(0)  # press q to quit, any other to view next image
+    print('Final Accuracy is {}'.format(correct/config.test_trials))
 
-            cv2.imshow('img', img)
-            cv2.waitKey(0)  # press q to quit, any other to view next image
+def compute_overlap(a, b):
+    ''' Compute intersection between boxes in a and the current box b'''
+    iw = np.minimum(a[:, 2], b[:, 2]) - np.maximum(a[:, 0], b[:, 0])
+    ih = np.minimum(a[:, 3], b[:, 3]) - np.maximum(a[:, 1], b[:, 1])
 
+    iw = np.maximum(iw, 0)
+    ih = np.maximum(ih, 0)
+
+    area = (b[:, 2] - b[:, 0]) * (b[:, 3] - b[:, 1])
+
+    ua = (a[:, 2] - a[:, 0]) * (a[:, 3] - a[:, 1]) + area - iw * ih
+
+    ua = np.maximum(ua, np.finfo(float).eps)
+
+    intersection = iw * ih
+
+    return intersection / ua
 
 def draw_caption(image, box, caption):
 
@@ -229,32 +269,37 @@ class OmniglotTest(Dataset):
         self.img1_labels = [i[-1] for i in self.data_file]
 
     def __len__(self):
-        return self.trials
+        return self.trials//self.way
 
     def __getitem__(self, index):
         self.rng = Random(self.seed + index)
 
         # every 'way' number of images, have one pair from same class
         # e.g. way = 20, then pairs number 0, 20, 40... will be from same class
-        idx = index % self.way   
+        # idx = index % self.way   
         # generate image pair from same class
 
-        if idx == 0:
-            while True:
-                img2 = self.rng.choice(self.dataset.imgs)
-                if img2[1] in self.img1_labels[index*5:index*5+5]:
-                    break
-        # generate image pair from different class
-        else:
-            while True:
-                img2 = self.rng.choice(self.dataset.imgs)
-                if img2[1] not in self.img1_labels[index*5:index*5+5]:
-                    break
+        while True:
+            img2 = self.rng.choice(self.dataset.imgs)
+            if img2[1] in self.img1_labels[index*5*self.way:index*5*self.way+5*self.way]:
+                break
+        # if idx == 0:
+        #     while True:
+        #         img2 = self.rng.choice(self.dataset.imgs)
+        #         if img2[1] in self.img1_labels[index*5:index*5+5]:
+        #             break
+        # # generate image pair from different class
+        # else:
+        #     while True:
+        #         img2 = self.rng.choice(self.dataset.imgs)
+        #         if img2[1] not in self.img1_labels[index*5:index*5+5]:
+        #             break
+        label = img2[1]
         img2 = Image.open(img2[0])
         img2 = img2.convert('L')
         img2 = self.transform(img2)
         img2 = img2.unsqueeze(0)
-        return img2
+        return img2, label
 
 class Trainer(object):
     def __init__(self, config, layer_hyperparams):

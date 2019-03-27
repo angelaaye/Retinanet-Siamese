@@ -1,4 +1,3 @@
-
 import os
 import json
 import torch
@@ -74,7 +73,6 @@ def _get_detections(dataset, retinanet, score_threshold=0.05, max_detections=100
     all_detections = [[None for i in range(dataset.num_classes())] for j in range(len(dataset))]
 
     retinanet.eval()
-    
     with torch.no_grad():
 
         for index in range(len(dataset)):
@@ -82,7 +80,7 @@ def _get_detections(dataset, retinanet, score_threshold=0.05, max_detections=100
             scale = data['scale']
 
             # run network
-            scores, labels, boxes = retinanet(data['img'].permute(2, 0, 1).cuda().float().unsqueeze(dim=0))
+            scores, labels, boxes = retinanet([data['img'].permute(2, 0, 1).cuda().float().unsqueeze(dim=0), data['pair'].permute(2, 0, 1).cuda().float().unsqueeze(dim=0)])
             scores = scores.cpu().numpy()
             labels = labels.cpu().numpy()
             boxes  = boxes.cpu().numpy()
@@ -113,7 +111,7 @@ def _get_detections(dataset, retinanet, score_threshold=0.05, max_detections=100
                 for label in range(dataset.num_classes()):
                     all_detections[index][label] = np.zeros((0, 5))
 
-            print('{}/{}'.format(index + 1, len(dataset)), end='\r')
+            print('Getting Detections: {}/{}'.format(index + 1, len(dataset)), end='\r')
 
     return all_detections
 
@@ -131,8 +129,9 @@ def _get_annotations(generator):
 
     for i in range(len(generator)):
         # load the annotations
-        annotations = generator.load_annotations(i)
-
+        # annotations = generator.load_annotations(i)
+        data = generator.get_annot(i)
+        annotations = data['annot']
         # copy detections to all_annotations
         for label in range(generator.num_classes()):
             all_annotations[i][label] = annotations[annotations[:, 4] == label, :4].copy()
@@ -171,13 +170,13 @@ def evaluate(
 
     average_precisions = {}
 
-    for label in range(generator.num_classes()):
+    for label in range(generator.num_classes()): # loop through each class (pair or not pair)
         false_positives = np.zeros((0,))
         true_positives  = np.zeros((0,))
         scores          = np.zeros((0,))
         num_annotations = 0.0
 
-        for i in range(len(generator)):
+        for i in range(len(generator)): # loop through each image
             detections           = all_detections[i][label]
             annotations          = all_annotations[i][label]
             num_annotations     += annotations.shape[0]

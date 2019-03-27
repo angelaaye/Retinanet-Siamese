@@ -2,3 +2,9 @@
 data/
 background/
 obj_detection/
+trainlabel.csv
+validlabel.csv
+testlabel.csv
+trainmap.csv
+validmap.csv
+testmap.csv

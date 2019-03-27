@@ -1,6 +1,7 @@
 import torch
 import numpy as np
 import torch.nn as nn
+import torch.nn.functional as F
 
 def calc_iou(a, b):
     '''
@@ -56,11 +57,15 @@ class FocalLoss(nn.Module):
             bbox_annotation = annotations[j, :, :]
             bbox_annotation = bbox_annotation[bbox_annotation[:, 4] != -1]
 
+            # label = labels[j, :, :]
+
             if bbox_annotation.shape[0] == 0:
                 regression_losses.append(torch.tensor(0).float().cuda())
                 classification_losses.append(torch.tensor(0).float().cuda())
-
                 continue
+
+            # similarity_annot = [bbox_annotation[:, 4]==label[:, :]]
+            # classification_losses = F.binary_cross_entropy_with_logits(classification, similarity_annot)
 
             classification = torch.clamp(classification, 1e-4, 1.0 - 1e-4) # set min and max of classification outputs
 
@@ -82,8 +87,8 @@ class FocalLoss(nn.Module):
 
             assigned_annotations = bbox_annotation[IoU_argmax, :]  # take the rows of ground-truth coordinates with highest IoU
 
-            targets[positive_indices, :] = 0
-            targets[positive_indices, assigned_annotations[positive_indices, 4].long()] = 1
+            targets[positive_indices, :] = 0 # if IoU_max >= 0.5, set targets = 0
+            targets[positive_indices, assigned_annotations[positive_indices, 4].long()] = 1 # set each anchor box to one label
 
             alpha_factor = torch.ones(targets.shape).cuda() * alpha
 
