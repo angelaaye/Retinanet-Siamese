@@ -58,7 +58,7 @@ misc_arg.add_argument('--plot', type=str2bool, default=True,
 valid_arg = add_argument_group('Validate')
 valid_arg.add_argument('--csv_classes', type=str, default='testmap.csv', help='Path to file containing class list (see readme)')
 valid_arg.add_argument('--csv_val', type=str, default='testlabel.csv', help='Path to file containing validation annotations (optional, see readme)')
-valid_arg.add_argument('--model_date', help='Path to model (.pt) file.')
+valid_arg.add_argument('--model_date', help='Path to directory of best_retinanet.pt model file.')
 valid_arg.add_argument('--depth', help='Resnet depth, must be one of 18, 34, 50, 101, 152', type=int, default=18)
 valid_arg.add_argument('--thres', help='IoU threshold, between 0.5 and 0.95 inclusive', type=float, default=0.5)
 valid_arg.add_argument('--eval_map', help='Whether to evaluate mAP', type=str2bool, default=False)

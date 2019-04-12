@@ -15,10 +15,18 @@ Credits to kevinzakka's [one-shot-siamese](https://github.com/kevinzakka/one-sho
 
 ## Training
 
-The network can be trained using the `train.py` script. 
+The network can be trained using the `trainer.py` script. 
 
 ```
 python trainer.py --csv_train <path/to/train_annots.csv>  --csv_classes <path/to/train/class_list.csv>  --csv_val <path/to/val_annots.csv> --depth <resnet depth>
+```
+
+## Testing
+
+The network can be evaluated using the `tester.py` script. 
+
+```
+python tester.py --csv_classes <path/to/train/class_list.csv>  --csv_val <path/to/val_annots.csv> --model_date <date in %d-%m-%Y-%H-%M-%S format containing the model> --depth <resnet depth>
 ```
 
 ## Model

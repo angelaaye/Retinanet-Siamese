@@ -348,9 +348,9 @@ class ResNet(nn.Module):
 
         if self.training:
             labels, good_anchors, good_regression, classification_loss, regression_loss = self.focalLoss(classification, regression, anchors, annotations)
-            # transformed_anchors = self.regressBoxes(good_anchors.unsqueeze(0), good_regression.unsqueeze(0))
-            # boxes = self.clipBoxes(transformed_anchors, img_batch)
-            boxes = good_anchors.unsqueeze(0)
+            transformed_anchors = self.regressBoxes(good_anchors.unsqueeze(0), good_regression.unsqueeze(0))
+            boxes = self.clipBoxes(transformed_anchors, img_batch)
+            # boxes = good_anchors.unsqueeze(0)
             pooled_feats = pyramid_roi_align([boxes]+features, 6, img_batch.shape[2:])
             # pooled_feats = self.pooler(features, boxes)
             out = self.siameseNetwork(pooled_feats, pairs)
