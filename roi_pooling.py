@@ -2,12 +2,17 @@ import math
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-# from lib.model.roi_layers import ROIAlign
 
 import torch.autograd as ag
 from torch.autograd.function import Function
 from torch._thnn import type2backend
 
+############
+# Clone 'lib' directory from https://github.com/jwyang/faster-rcnn.pytorch/tree/pytorch-1.0
+# to use the code below
+############
+
+# from lib.model.roi_layers import ROIAlign
 
 # class LevelMapper(object):
 #     """Determine which FPN level each RoI in a set of RoIs should map to based
@@ -195,13 +200,13 @@ def pyramid_roi_align(inputs, pool_size, image_shape):
 
     # Equation 1 in the Feature Pyramid Networks paper.
     # e.g. a 224x224 ROI (in pixels) maps to P4
-    roi_level = torch.floor(4 + torch.log2(torch.sqrt(h*w) /224 + 1e-6)) + 2
+    roi_level = torch.floor(4 + torch.log2(torch.sqrt(h*w) /224 + 1e-6))
     roi_level = torch.clamp(roi_level, min=3, max=5)
     
     # Loop through levels and apply ROI pooling to each. P2 to P5.
     pooled = []
     box_to_level = []
-    scales = [1.0/32, 1.0/64, 1.0/128]
+    # scales = [1.0/32, 1.0/64, 1.0/128]
     for i, level in enumerate(range(3, 6)):
         ix  = roi_level==level
         if not ix.any():
@@ -227,7 +232,7 @@ def pyramid_roi_align(inputs, pool_size, image_shape):
         # feature_maps[i] = feature_maps[i].unsqueeze(0)  #CropAndResizeFunction needs batch dimension
         level_boxes = torch.cat([ind, level_boxes], dim=1)
         # level_boxes = torch.index_select(level_boxes, 1, torch.LongTensor([4,0,1,2,3]).cuda())
-        pooled_features = roi_pooling(feature_maps[i], level_boxes, size=(pool_size,pool_size), spatial_scale=scales[i])
+        pooled_features = roi_pooling(feature_maps[i], level_boxes, size=(pool_size,pool_size), spatial_scale=1.0/16)
         # pooled_features = CropAndResizeFunction(pool_size, pool_size, 0)(feature_maps[i], level_boxes, ind)
         pooled.append(pooled_features)
 
