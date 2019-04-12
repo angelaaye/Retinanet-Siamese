@@ -19,7 +19,7 @@ from torchvision import datasets, models, transforms
 
 import losses
 import eval_new
-import model
+import retinanet_roi
 from anchors import Anchors
 from config import get_config
 from utils import AverageMeter
@@ -63,19 +63,19 @@ def main(config):
 
     # Create the model
     if config.depth == 18:
-        retinanet = model.resnet18(
+        retinanet = retinanet_roi.resnet18(
             num_classes=dataset_train.num_classes(), pretrained=True)
     elif config.depth == 34:
-        retinanet = model.resnet34(
+        retinanet = retinanet_roi.resnet34(
             num_classes=dataset_train.num_classes(), pretrained=True)
     elif config.depth == 50:
-        retinanet = model.resnet50(
+        retinanet = retinanet_roi.resnet50(
             num_classes=dataset_train.num_classes(), pretrained=True)
     elif config.depth == 101:
-        retinanet = model.resnet101(
+        retinanet = retinanet_roi.resnet101(
             num_classes=dataset_train.num_classes(), pretrained=True)
     elif config.depth == 152:
-        retinanet = model.resnet152(
+        retinanet = retinanet_roi.resnet152(
             num_classes=dataset_train.num_classes(), pretrained=True)
     else:
         raise ValueError(

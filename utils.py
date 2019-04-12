@@ -1,7 +1,9 @@
 import torch
 import numpy as np
 import torch.nn as nn
+from PIL import Image
 import torch.nn.functional as F
+from torchvision import transforms
 
 def conv3x3(in_planes, out_planes, stride=1):
     """3x3 convolution with padding"""
@@ -140,3 +142,35 @@ class AverageMeter(object):
         self.count += n
         self.avg = self.sum / self.count
 
+
+class CropBoxes(nn.Module):
+
+    def __init__(self):
+        super(CropBoxes, self).__init__()
+        self.transform = transforms.ToTensor()
+
+    def forward(self, input_img, crop_boxes):     
+        img = np.array(255 * input_img.cpu()).copy()
+
+        img[img<0] = 0
+        img[img>255] = 255
+
+        img = np.transpose(img, (1, 2, 0))
+        PIL_img = Image.fromarray(np.uint8(img))
+        cropped_imgs = None
+        for j in range(crop_boxes.shape[0]):
+            bbox = crop_boxes[j, :]
+            x1 = int(bbox[0])
+            y1 = int(bbox[1])
+            x2 = int(bbox[2])
+            y2 = int(bbox[3])
+            cropped_img = PIL_img.crop((x1, y1, x2, y2))
+            cropped_img = cropped_img.resize((105, 105))
+            cropped_img = cropped_img.convert('L')
+            cropped_img = self.transform(cropped_img)
+            cropped_img = cropped_img.unsqueeze(0)
+            if cropped_imgs is not None:
+                cropped_imgs = torch.cat((cropped_imgs, cropped_img))
+            else:
+                cropped_imgs = cropped_img
+        return cropped_imgs

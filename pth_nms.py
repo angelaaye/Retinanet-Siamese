@@ -62,5 +62,5 @@ def pth_nms(dets, thresh, top_k=200):
         IoU = inter/union  # store result in iou
         # keep only elements with an IoU <= overlap
         idx = idx[IoU.le(thresh)]
-    return keep
+    return keep[:count]
    

@@ -6,11 +6,11 @@ import torch.nn as nn
 import torch.nn.functional as F
 import torch.utils.model_zoo as model_zoo
 
+import utils
 import losses
 from anchors import Anchors
 from pth_nms import pth_nms
 from utils import BasicBlock, Bottleneck, BBoxTransform, ClipBoxes
-
 
 def nms(dets, thresh):
     """Dispatch to either CPU or GPU NMS implementations.\
@@ -102,12 +102,53 @@ class RegressionModel(nn.Module):
         # [N, 9*4,H,W] -> [N,H,W, 9*4] -> [N,H*W*9, 4]
         return out.contiguous().view(out.shape[0], -1, 4)
 
+class SiameseNetwork(torch.nn.Module):
+    '''
+    Implements the Siamese Network defined in Koch's paper. For more detail, please visit
+    http://www.cs.utoronto.ca/~gkoch/files/msc-thesis.pdf
+    The network consists of 4 convolutional layers, each followed by relu and max pool.
+    Lastly, the L1 distance between two images are compared to output a sigmoid output.
+    '''
+    def __init__(self):
+        super(SiameseNetwork, self).__init__()
+
+        self.conv1 = torch.nn.Conv2d(1, 64, kernel_size=10)
+        self.conv2 = torch.nn.Conv2d(64, 128, kernel_size=7)
+        self.conv3 = torch.nn.Conv2d(128, 128, kernel_size=4)
+        self.conv4 = torch.nn.Conv2d(128, 256, kernel_size=4)
+        self.pool = torch.nn.MaxPool2d(kernel_size=2)
+        self.fc1 = torch.nn.Linear(256 * 6 * 6, 4096)
+        self.fc2 = torch.nn.Linear(4096, 1)
+        self.sigmoid = torch.nn.Sigmoid()
+
+    def sub_forward(self, x):
+        x = F.relu(self.conv1(x))
+        x = self.pool(x)
+        x = F.relu(self.conv2(x))
+        x = self.pool(x)
+        x = F.relu(self.conv3(x))
+        x = self.pool(x)
+        x = F.relu(self.conv4(x))
+        # x = self.pool(x)         
+        # x = x.view(x.shape[0], -1)  
+        x = x.view(-1, 256 * 6 * 6)
+        x = self.sigmoid(self.fc1(x))
+        return x
+
+    def forward(self, x, y):
+        x1 = self.sub_forward(x)
+        x2 = self.sub_forward(y)
+        # L1 distance followed by Sigmoid
+        pred = self.sigmoid(self.fc2(torch.abs(x1-x2)))   
+
+        return pred
+
 class ClassificationModel(nn.Module):
     '''
     Network head consists of 3x3 convolution followed by two sibling 1x1 convolutions
     for classification and regressions to each level of the feature pyramid.
     '''
-    def __init__(self, num_features_in, num_anchors=9, num_classes=80, prior=0.01):
+    def __init__(self, num_features_in, num_anchors=9, num_classes=80):
         super(ClassificationModel, self).__init__()
 
         self.num_classes = num_classes
@@ -130,17 +171,16 @@ class ClassificationModel(nn.Module):
         out = self.sigmoid(self.conv5(out))
 
         # out is B x C x W x H, with C = n_classes + n_anchors
-        out1 = out.permute(0, 2, 3, 1)
+        out = out.permute(0, 2, 3, 1)
+        # batch_size, width, height, channels = out1.shape
 
-        batch_size, width, height, channels = out1.shape
-
-        out2 = out1.view(batch_size, width, height, self.num_anchors, self.num_classes)
+        # out2 = out1.view(batch_size, width, height, self.num_anchors, self.num_classes)
 
         # contiguous() makes a copy of the tensor
         # view() is equivalent to reshape; -1 fills the unknown dimension
         # [N,9*20,H,W] -> [N,H,W,9*20] -> [N,H*W*9,20]
-        return out2.contiguous().view(x.shape[0], -1, self.num_classes)
-        # return out.contiguous().view(x.shape[0], -1, self.num_classes)
+        # return out2.contiguous().view(x.shape[0], -1, self.num_classes)
+        return out.contiguous().view(x.shape[0], -1, self.num_classes) #(batch_size, num_anchors*width*height, num_classes)
 
 class ResNet(nn.Module):
 
@@ -163,9 +203,9 @@ class ResNet(nn.Module):
             fpn_sizes = [self.layer2[layers[1]-1].conv3.out_channels, self.layer3[layers[2]-1].conv3.out_channels, self.layer4[layers[3]-1].conv3.out_channels]
 
         self.fpn = PyramidFeatures(fpn_sizes[0], fpn_sizes[1], fpn_sizes[2])
-
         self.regressionModel = RegressionModel(256)
         self.classificationModel = ClassificationModel(256, num_classes=num_classes)
+        self.siameseNetwork = SiameseNetwork()
 
         self.anchors = Anchors()
 
@@ -173,7 +213,9 @@ class ResNet(nn.Module):
 
         self.clipBoxes = ClipBoxes()
         
-        self.focalLoss = losses.FocalLoss()
+        self.focalLoss = losses.FocalLossModified()
+
+        self.cropBoxes = utils.CropBoxes()
                 
         for m in self.modules():
             if isinstance(m, nn.Conv2d):
@@ -220,28 +262,29 @@ class ResNet(nn.Module):
     def forward(self, inputs):
 
         if self.training:
-            img_batch, annotations = inputs
+            img_batch, annotations, pairs = inputs
         else:
-            img_batch = inputs
+            img_batch, pairs = inputs
             
-        c1 = F.relu(self.bn1(self.conv1(img_batch)))
-        c1 = F.max_pool2d(c1, kernel_size=3, stride=2, padding=1)
-
-        c2 = self.layer1(c1)
-        c3 = self.layer2(c2)
-        c4 = self.layer3(c3)
-        c5 = self.layer4(c4)
-
+        c1 = F.relu(self.bn1(self.conv1(img_batch)))  # 2, 64, 320, 320
+        c1 = F.max_pool2d(c1, kernel_size=3, stride=2, padding=1) #2, 64, 160, 160
+        c2 = self.layer1(c1) # c2 torch.Size([2, 64, 160, 160])
+        c3 = self.layer2(c2) # c3 torch.Size([2, 128, 80, 80])
+        c4 = self.layer3(c3) # c4 torch.Size([2, 256, 40, 40]) 
+        c5 = self.layer4(c4) # c5 torch.Size([2, 512, 20, 20])
         features = self.fpn([c3, c4, c5])
 
         regression = torch.cat([self.regressionModel(feature) for feature in features], dim=1)
-
+        
         classification = torch.cat([self.classificationModel(feature) for feature in features], dim=1)
 
         anchors = self.anchors(img_batch)
 
         if self.training:
-            return self.focalLoss(classification, regression, anchors, annotations)
+            cropped_imgs, stacked_pairs, labels, classification_loss, regression_loss = self.focalLoss(classification, regression, anchors, inputs)
+            out = self.siameseNetwork(cropped_imgs.cuda(), stacked_pairs)
+            siamese_loss = F.binary_cross_entropy_with_logits(out, labels.cuda())
+            return siamese_loss, classification_loss, regression_loss
         else:
             transformed_anchors = self.regressBoxes(anchors, regression)
             transformed_anchors = self.clipBoxes(transformed_anchors, img_batch)
@@ -252,17 +295,19 @@ class ResNet(nn.Module):
 
             if scores_over_thresh.sum() == 0:
                 # no boxes to NMS, just return
-                return [torch.zeros(0), torch.zeros(0), torch.zeros(0, 4)]
+                return [torch.zeros(0), torch.zeros(0), torch.zeros(0, 4), torch.zeros(0)]
 
             classification = classification[:, scores_over_thresh, :]
             transformed_anchors = transformed_anchors[:, scores_over_thresh, :]
             scores = scores[:, scores_over_thresh, :]
 
             anchors_nms_idx = nms(torch.cat([transformed_anchors, scores], dim=2)[0, :, :], 0.5)
-
             nms_scores, nms_class = classification[0, anchors_nms_idx, :].max(dim=1)
 
-            return [nms_scores, nms_class, transformed_anchors[0, anchors_nms_idx, :]]
+            cropped_imgs = self.cropBoxes(img_batch[0, :, :, :], transformed_anchors[0, anchors_nms_idx, :])
+            stacked_pairs = pairs[0, :, :, :].unsqueeze(0).repeat(cropped_imgs.shape[0], 1, 1, 1)
+            similarity = self.siameseNetwork(cropped_imgs.cuda(), stacked_pairs)
+            return [nms_scores, nms_class, transformed_anchors[0, anchors_nms_idx, :], similarity]
 
 
 

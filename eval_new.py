@@ -80,10 +80,11 @@ def _get_detections(dataset, retinanet, score_threshold=0.05, max_detections=100
             scale = data['scale']
 
             # run network
-            scores, labels, boxes = retinanet([data['img'].permute(2, 0, 1).cuda().float().unsqueeze(dim=0), data['pair'].permute(2, 0, 1).cuda().float().unsqueeze(dim=0)])
+            scores, labels, boxes, similarity = retinanet([data['img'].permute(2, 0, 1).cuda().float().unsqueeze(dim=0), data['pair'].permute(2, 0, 1).cuda().float().unsqueeze(dim=0)])
             scores = scores.cpu().numpy()
             labels = labels.cpu().numpy()
             boxes  = boxes.cpu().numpy()
+            similarity = similarity.cpu().numpy()
 
             # correct boxes for image scale
             boxes /= scale
@@ -101,7 +102,8 @@ def _get_detections(dataset, retinanet, score_threshold=0.05, max_detections=100
                 image_boxes      = boxes[indices[scores_sort], :]
                 image_scores     = scores[scores_sort]
                 image_labels     = labels[indices[scores_sort]]
-                image_detections = np.concatenate([image_boxes, np.expand_dims(image_scores, axis=1), np.expand_dims(image_labels, axis=1)], axis=1)
+                image_similarity = similarity[indices[scores_sort], :]
+                image_detections = np.concatenate([image_boxes, np.expand_dims(image_scores, axis=1), image_similarity, np.expand_dims(image_labels, axis=1)], axis=1)
 
                 # copy detections to all_detections
                 for label in range(dataset.num_classes()):
@@ -109,9 +111,9 @@ def _get_detections(dataset, retinanet, score_threshold=0.05, max_detections=100
             else:
                 # copy detections to all_detections
                 for label in range(dataset.num_classes()):
-                    all_detections[index][label] = np.zeros((0, 5))
+                    all_detections[index][label] = np.zeros((0, 6))
 
-            print('Getting Detections: {}/{}'.format(index + 1, len(dataset)), end='\r')
+            # print('Getting Detections: {}/{}'.format(index + 1, len(dataset)), end='\r')
 
     return all_detections
 
@@ -134,9 +136,9 @@ def _get_annotations(generator):
         annotations = data['annot']
         # copy detections to all_annotations
         for label in range(generator.num_classes()):
-            all_annotations[i][label] = annotations[annotations[:, 4] == label, :4].copy()
+            all_annotations[i][label] = annotations[annotations[:, 4] == label, :].copy()
 
-        print('Getting Annotations: {}/{}'.format(i + 1, len(generator)), end='\r')
+        # print('Getting Annotations: {}/{}'.format(i + 1, len(generator)), end='\r')
 
     return all_annotations
 
@@ -169,6 +171,7 @@ def evaluate(
     all_annotations    = _get_annotations(generator)
 
     average_precisions = {}
+    correct = 0
 
     for label in range(generator.num_classes()): # loop through each class (pair or not pair)
         false_positives = np.zeros((0,))
@@ -181,6 +184,8 @@ def evaluate(
             annotations          = all_annotations[i][label]
             num_annotations     += annotations.shape[0]
             detected_annotations = []
+            sims = []
+            labels = []
 
             for d in detections:
                 scores = np.append(scores, d[4])
@@ -191,8 +196,11 @@ def evaluate(
                     continue
 
                 overlaps            = compute_overlap(np.expand_dims(d, axis=0), annotations)
-                assigned_annotation = np.argmax(overlaps, axis=1)
+                assigned_annotation = np.argmax(overlaps, axis=1)  #index of best annotation
                 max_overlap         = overlaps[0, assigned_annotation]
+                
+                sims = np.append(sims, d[5])
+                labels = np.append(labels, annotations[assigned_annotation, 5])
 
                 if max_overlap >= iou_threshold and assigned_annotation not in detected_annotations:
                     false_positives = np.append(false_positives, 0)
@@ -202,7 +210,16 @@ def evaluate(
                     false_positives = np.append(false_positives, 1)
                     true_positives  = np.append(true_positives, 0)
 
+            if len(sims) == 0:
+                continue
+            # compare maximum similarity with annot[5] (actual similarity)        
+            ind = np.argmax(sims)
+            if labels[ind] == 1:
+                correct += 1
+
             print('Calculating Scores: {}/{}'.format(i + 1, len(generator)), end='\r')
+
+
         # no annotations -> AP for this class is 0 (is this correct?)
         if num_annotations == 0:
             average_precisions[label] = 0, 0
@@ -229,6 +246,8 @@ def evaluate(
     for label in range(generator.num_classes()):
         label_name = generator.label_to_name(label)
         print('{}: {}'.format(label_name, average_precisions[label][0]))
+
+    print('similarity accuracy: {}%'.format((100. * correct)/len(generator)), end='\r')
     
-    return average_precisions
+    return average_precisions, correct
 

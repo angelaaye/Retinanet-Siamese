@@ -6,13 +6,15 @@ import random
 import numpy as np
 from PIL import Image
 import skimage.transform
+from random import Random
+from numpy import genfromtxt
 from torch.utils.data import Dataset, DataLoader
 from torch.utils.data.sampler import Sampler
 from torchvision import transforms, utils, datasets
 
-class CSVDataset(Dataset):
+class GetDataset(Dataset):
 
-    def __init__(self, train_file, class_list, transform=None):
+    def __init__(self, train_file, class_list, transform, dataset, seed):
         """
         Args:
             train_file (string): CSV file with training annotations
@@ -22,17 +24,23 @@ class CSVDataset(Dataset):
         self.train_file = train_file
         self.class_list = class_list
         self.transform = transform
+        self.pair_transform = transforms.ToTensor()
+        self.dataset = dataset
+        self.seed = seed
+        self.data_file = genfromtxt(self.train_file, delimiter=',', dtype=None, encoding="utf8")
+        self.img1_labels = [i[-1] for i in self.data_file]
 
         # parse the provided class file
         try:
             with self._open_for_csv(self.class_list) as file:
-                self.classes = self.load_classes(csv.reader(file, delimiter=','))
+                self.classes = self.load_classes(csv.reader(file, delimiter=',')) # result[class_name] = class_id
         except ValueError as e:
             raise ValueError('invalid CSV class file: {}: {}'.format(self.class_list, e))
 
         self.labels = {}
         for key, value in self.classes.items():  # key = class_name, value = class_id
-            self.labels[value] = key
+            # labels[class_id] = class_name, classes[class_name] = class_id
+            self.labels[value] = key   
 
         # csv with img_path, x1, y1, x2, y2, class_name
         try:
@@ -86,20 +94,47 @@ class CSVDataset(Dataset):
 
 
     def __len__(self):
-        return len(self.image_names)
+        # return len(self.image_names)
+        return 10
 
     def __getitem__(self, idx):
-
         img = self.load_image(idx)  # img = np.array/255
-        annot = self.load_annotations(idx)  # annot = [x1, y1, x2, y2, class_id]
-        sample = {'img': img, 'annot': annot}  
+        annot = self.load_annotations(idx)  # annot = [x1, y1, x2, y2, class_id, class_label]
+        pair, label = self.get_pair(idx, annot)
+        annot[:, 5] = annot[:, 5]==label
+        sample = {'img': img, 'annot': annot, 'pair': pair}  
         if self.transform:
             sample = self.transform(sample)
 
         return sample
+    
+    def get_annot(self, idx):
+        annot = self.load_annotations(idx)
+        pair, label = self.get_pair(idx, annot)
+        annot[:, 5] = annot[:, 5]==label
+        sample = {'annot': annot}
+        return sample 
+
+    def get_pair(self, index, annot):
+        self.rng = Random(self.seed + index)
+        while True:
+            img2 = self.rng.choice(self.dataset.imgs)
+            if img2[1] in annot[:, 5]:
+            # if img2[1] in self.img1_labels[index*5:index*5+5]:
+                break
+        label = img2[1]
+        img2 = Image.open(img2[0])
+        # if img2.mode != 'RGB':
+        #     img2 = img2.convert('RGB')
+        img2 = img2.convert('L')
+        # img2 = self.pair_transform(img2)
+        # img2 = img2.unsqueeze(0)
+        img2 = np.asarray(img2)
+        return img2.astype(np.float32)/255.0, label
 
     def load_image(self, image_index):
         img = Image.open(self.image_names[image_index])
+        # img = img.convert('L')
         if img.mode != 'RGB':
             img = img.convert('RGB')
         img = np.asarray(img)
@@ -107,8 +142,8 @@ class CSVDataset(Dataset):
 
     def load_annotations(self, image_index):
         # get ground truth annotations
-        annotation_list = self.image_data[self.image_names[image_index]]
-        annotations     = np.zeros((0, 5))
+        annotation_list = self.image_data[self.image_names[image_index]]  # image_data[img_filename] = [x1, x2, y1, y2, class_name]
+        annotations     = np.zeros((0, 6))
 
         # some images appear to miss annotations (like image with id 257034)
         if len(annotation_list) == 0:
@@ -125,15 +160,16 @@ class CSVDataset(Dataset):
             if (x2-x1) < 1 or (y2-y1) < 1:
                 continue
 
-            annotation        = np.zeros((1, 5))
+            annotation        = np.zeros((1, 6))
             
             annotation[0, 0] = x1
             annotation[0, 1] = y1
             annotation[0, 2] = x2
             annotation[0, 3] = y2
 
-            annotation[0, 4]  = self.name_to_label(a['class'])
-            annotations       = np.append(annotations, annotation, axis=0)
+            annotation[0, 4] = self.name_to_label(a['class'])
+            annotation[0, 5] = a['class']
+            annotations      = np.append(annotations, annotation, axis=0)
 
         return annotations
 
@@ -191,7 +227,9 @@ def collater(data):
     imgs = [s['img'] for s in data]
     annots = [s['annot'] for s in data]
     scales = [s['scale'] for s in data]
-        
+    pairs = [s['pair'] for s in data]
+    # labels = [s['label'] for s in data] 
+
     widths = [int(s.shape[0]) for s in imgs]
     heights = [int(s.shape[1]) for s in imgs]
     batch_size = len(imgs)
@@ -200,36 +238,42 @@ def collater(data):
     max_height = np.array(heights).max()
 
     padded_imgs = torch.zeros(batch_size, max_width, max_height, 3)
-
+    padded_pairs = torch.zeros(batch_size, np.array([int(s.shape[0]) for s in pairs]).max(), np.array([int(s.shape[1]) for s in pairs]).max(), 1)
+   
     for i in range(batch_size):
         img = imgs[i]
+        pair = pairs[i]
         padded_imgs[i, :int(img.shape[0]), :int(img.shape[1]), :] = img
+        padded_pairs[i, :int(pair.shape[0]), :int(pair.shape[1]), :] = pair
 
     max_num_annots = max(annot.shape[0] for annot in annots)
     
     if max_num_annots > 0:
 
-        annot_padded = torch.ones((len(annots), max_num_annots, 5)) * -1
-
+        annot_padded = torch.ones((len(annots), max_num_annots, 6)) * -1  # batch_size by max_num_annots per image (5) by 6
+        # label_padded = torch.ones((len(annots), 1, 1)) * -1 
         if max_num_annots > 0:
             for idx, annot in enumerate(annots):
                 #print(annot.shape)
                 if annot.shape[0] > 0:
                     annot_padded[idx, :annot.shape[0], :] = annot
+                    # try:
+                    #     label_padded[idx, :, :] = labels[idx]
+                    # except:
+                    #     continue
     else:
-        annot_padded = torch.ones((len(annots), 1, 5)) * -1
+        annot_padded = torch.ones((len(annots), 1, 6)) * -1
 
 
     padded_imgs = padded_imgs.permute(0, 3, 1, 2)   # change order so it's i, ch, w, h
-
-    return {'img': padded_imgs, 'annot': annot_padded, 'scale': scales}
+    padded_pairs = padded_pairs.permute(0, 3, 1, 2)
+    return {'img': padded_imgs, 'annot': annot_padded, 'scale': scales, 'pair': padded_pairs}
 
 class Resizer(object):
     """Convert ndarrays in sample to Tensors."""
 
     def __call__(self, sample, min_side=608, max_side=1024):
-        image, annots = sample['img'], sample['annot']
-
+        image, annots, pair = sample['img'], sample['annot'], sample['pair']
         rows, cols, cns = image.shape
 
         smallest_side = min(rows, cols)
@@ -251,12 +295,30 @@ class Resizer(object):
         pad_w = 32 - rows%32
         pad_h = 32 - cols%32
 
+        # image = np.stack((image,)*1, axis=-1)
+
         new_image = np.zeros((rows + pad_w, cols + pad_h, cns)).astype(np.float32)
         new_image[:rows, :cols, :] = image.astype(np.float32)
 
         annots[:, :4] *= scale
 
-        return {'img': torch.from_numpy(new_image), 'annot': torch.from_numpy(annots), 'scale': scale}
+        pair = np.stack((pair,)*1, axis=-1)
+        # rows, cols, cns = pair.shape   
+        # smallest_side = min(rows, cols)
+        
+        # min_side = 160 - 32
+        # scale_pair = min_side/smallest_side
+        # pair = skimage.transform.resize(pair, (int(round(rows*scale_pair)), int(round((cols*scale_pair)))))
+
+        # rows, cols, cns = pair.shape
+
+        # pad_w = 32 - rows%32
+        # pad_h = 32 - cols%32
+
+        # new_pair = np.zeros((rows + pad_w, cols + pad_h, cns)).astype(np.float32)
+        # new_pair[:rows, :cols, :] = pair.astype(np.float32)
+
+        return {'img': torch.from_numpy(new_image), 'annot': torch.from_numpy(annots), 'scale': scale, 'pair': torch.from_numpy(pair)}
 
 
 class Augmenter(object):
@@ -265,10 +327,10 @@ class Augmenter(object):
     def __call__(self, sample, flip_x=0.5):
 
         if np.random.rand() < flip_x:
-            image, annots = sample['img'], sample['annot']
+            image, annots, pair = sample['img'], sample['annot'], sample['pair']
             image = image[:, ::-1, :]
 
-            rows, cols, channels = image.shape
+            rows, cols, cns = image.shape
 
             x1 = annots[:, 0].copy() #x1
             x2 = annots[:, 2].copy() #x2
@@ -278,69 +340,6 @@ class Augmenter(object):
             annots[:, 0] = cols - x2
             annots[:, 2] = cols - x_tmp
 
-            sample = {'img': image, 'annot': annots}
+            sample = {'img': image, 'annot': annots, 'pair': pair}
 
         return sample
-
-
-class Normalizer(object):
-
-    def __init__(self):
-        self.mean = np.array([[[0.485, 0.456, 0.406]]])
-        self.std = np.array([[[0.229, 0.224, 0.225]]])
-
-    def __call__(self, sample):
-
-        image, annots = sample['img'], sample['annot']
-
-        return {'img':((image.astype(np.float32)-self.mean)/self.std), 'annot': annots}
-
-class UnNormalizer(object):
-    def __init__(self, mean=None, std=None):
-        if mean == None:
-            self.mean = [0.485, 0.456, 0.406]
-        else:
-            self.mean = mean
-        if std == None:
-            self.std = [0.229, 0.224, 0.225]
-        else:
-            self.std = std
-
-    def __call__(self, tensor):
-        """
-        Args:
-            tensor (Tensor): Tensor image of size (C, H, W) to be normalized.
-        Returns:
-            Tensor: Normalized image.
-        """
-        for t, m, s in zip(tensor, self.mean, self.std):
-            t.mul_(s).add_(m)
-        return tensor
-
-
-class AspectRatioBasedSampler(Sampler):
-
-    def __init__(self, data_source, batch_size, drop_last):
-        self.data_source = data_source
-        self.batch_size = batch_size
-        self.drop_last = drop_last
-        self.groups = self.group_images()
-
-    def __iter__(self):
-        random.shuffle(self.groups)
-        for group in self.groups:
-            yield group
-
-    def __len__(self):
-        if self.drop_last:
-            return len(self.data_source) // self.batch_size
-        else:
-            return (len(self.data_source) + self.batch_size - 1) // self.batch_size
-
-    def group_images(self):
-        # determine the order of the images
-        order = list(range(len(self.data_source)))
-        order.sort(key=lambda x: self.data_source.image_aspect_ratio(x))
-
-        # divide into groups, one group = one batch
-        return [[order[x % len(order)] for x in range(i, i + self.batch_size)] for i in range(0, len(order), self.batch_size)]

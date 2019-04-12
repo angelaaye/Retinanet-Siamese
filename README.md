@@ -1,29 +1,24 @@
 # Retinanet-Siamese
 
+Credits to kevinzakka's [one-shot-siamese](https://github.com/kevinzakka/one-shot-siamese) and yhenon's [pytorch-retinanet](https://github.com/yhenon/pytorch-retinanet).
+
+
 ## Installation
 
 1) Clone this repo
 
 2) Install the required packages
 
+3) Download the data using `chmod +x run.sh` and `./run.sh`
+
+4) Process the data using `data_prep.py` and `scene_img_prep.py`
+
 ## Training
 
 The network can be trained using the `train.py` script. 
 
-For training using a custom dataset, with annotations in CSV format (see below), use
-
 ```
-python train.py --csv_train <path/to/train_annots.csv>  --csv_classes <path/to/train/class_list.csv>  --csv_val <path/to/val_annots.csv> --depth <resnet depth>
-```
-
-## Visualization
-
-To visualize the network detection, use `visualize.py`.
-
-This will visualize bounding boxes on the validation set. To visualise with a CSV dataset, use:
-
-```
-python visualize.py --csv_classes <path/to/train/class_list.csv>  --csv_val <path/to/val_annots.csv> --model <path/to/model.pt> --depth <resnet depth>
+python trainer.py --csv_train <path/to/train_annots.csv>  --csv_classes <path/to/train/class_list.csv>  --csv_val <path/to/val_annots.csv> --depth <resnet depth>
 ```
 
 ## Model
@@ -79,10 +74,3 @@ cow,0
 cat,1
 bird,2
 ```
-
-## Acknowledgements
-
-- Significant amounts of code are borrowed from the [one-shot-siamese](https://github.com/kevinzakka/one-shot-siamese)
-- And also [pytorch-retinanet]
-(https://github.com/yhenon/pytorch-retinanet)
-

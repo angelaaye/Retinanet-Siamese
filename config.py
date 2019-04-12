@@ -22,16 +22,17 @@ misc_arg.add_argument('--use_gpu', type=str2bool, default=True,
                       help="Whether to run on the GPU")
 misc_arg.add_argument('--data_dir', type=str, default='./data/changed/',
                       help='Directory in which data is stored')
-misc_arg.add_argument('--save_model', type=bool, default=True,
+misc_arg.add_argument('--save_model', type=str2bool, default=True,
                       help='Whether to save the model')                      
 
 
 train_arg = add_argument_group('Training')
-train_arg.add_argument('--csv_classes', help='Path to file containing class list (see readme)')
-train_arg.add_argument('--csv_train', help='Path to file containing training annotations (optional, see readme)')
+train_arg.add_argument('--csv_classes', help='Path to file containing class list (see readme)', default='trainmap.csv')
+train_arg.add_argument('--csv_train', help='Path to file containing training annotations (optional, see readme)', default='trainlabel.csv')
 train_arg.add_argument('--csv_val', help='Path to file containing training annotations (optional, see readme)')
 train_arg.add_argument('--depth', help='Resnet depth, must be one of 18, 34, 50, 101, 152', type=int, default=18)
 train_arg.add_argument('--epochs', help='Number of epochs', type=int, default=20)
+train_arg.add_argument('--batch_size', help='Training batch size number', type=int, default=2)
 
 def get_config():
     config, unparsed = parser.parse_known_args()
